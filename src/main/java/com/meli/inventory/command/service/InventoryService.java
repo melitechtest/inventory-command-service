@@ -1,24 +1,25 @@
 package com.meli.inventory.command.service;
 
-import com.meli.inventory.command.config.RabbitMQConfig;
 import com.meli.inventory.command.dto.SaleRequest;
 import com.meli.inventory.command.dto.StockUpdateEvent;
 import com.meli.inventory.command.model.InventoryItem;
 import com.meli.inventory.command.repository.InventoryRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jms.core.JmsTemplate;
 
 /**
- * Handles all write operations (sales and restock) and publishes events.
+ * Handles all write operations (sales and restock) and publishes events using JMS/Artemis.
  */
 @Service
 @RequiredArgsConstructor
 public class InventoryService {
 
     private final InventoryRepository inventoryRepository;
-    private final RabbitTemplate rabbitTemplate;
+    private final JmsTemplate jmsTemplate;
+
+    private static final String STOCK_TOPIC = "stock.update.topic";
 
     @Transactional
     public InventoryItem handleSale(SaleRequest saleRequest) {
@@ -51,10 +52,11 @@ public class InventoryService {
     }
 
     /**
-     * Publishes a stock update event to RabbitMQ.
+     * Publishes a stock update event to the Artemis Topic using JmsTemplate.
      */
     private void publishStockUpdate(InventoryItem item) {
         StockUpdateEvent event = new StockUpdateEvent(item.getProductId(), item.getQuantity());
-        rabbitTemplate.convertAndSend(RabbitMQConfig.EXCHANGE_NAME, RabbitMQConfig.ROUTING_KEY, event);
+
+        jmsTemplate.convertAndSend(STOCK_TOPIC, event);
     }
 }
