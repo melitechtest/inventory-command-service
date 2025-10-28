@@ -7,7 +7,7 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 
 /**
- * Data Transfer Object for communicating stock changes via RabbitMQ.
+ * Data Transfer Object for communicating stock changes via JMS.
  */
 @Data
 @NoArgsConstructor
