@@ -38,16 +38,28 @@ public class InventoryService {
 
     @Transactional
     public InventoryItem handleRestock(String productId, int quantityAdded) {
+        if (quantityAdded <= 0) {
+            throw new IllegalArgumentException("quantityAdded must be > 0");
+        }
+
         InventoryItem item = inventoryRepository.findByProductId(productId).orElseGet(() -> {
             InventoryItem newItem = new InventoryItem();
             newItem.setProductId(productId);
+            newItem.setQuantity(0);
             return newItem;
         });
 
-        item.setQuantity(item.getQuantity() + quantityAdded);
+        int current = item.getQuantity();
+        item.setQuantity(current + quantityAdded);
+
         InventoryItem updatedItem = inventoryRepository.save(item);
 
-        publishStockUpdate(updatedItem);
+        try {
+            publishStockUpdate(updatedItem);
+        } catch (org.springframework.jms.JmsSecurityException ex) {
+            throw new RuntimeException("Failed to publish stock update to broker: " + ex.getMessage(), ex);
+        }
+
         return updatedItem;
     }
 
