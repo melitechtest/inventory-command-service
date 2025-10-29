@@ -33,7 +33,7 @@ public class InventoryService {
     public InventoryItem handleSale(SaleRequest saleRequest) {
         String productId = saleRequest.getProductId();
 
-        InventoryItem item = inventoryRepository.findByProductIdForUpdate(productId).orElseThrow(() -> new RuntimeException("Product not found: " + productId));
+        InventoryItem item = inventoryRepository.findByProductIdWithLock(productId).orElseThrow(() -> new RuntimeException("Product not found: " + productId));
 
         if (item.getQuantity() < saleRequest.getQuantitySold()) {
             throw new RuntimeException("Insufficient stock for product " + productId);
@@ -55,7 +55,7 @@ public class InventoryService {
             throw new IllegalArgumentException("quantityAdded must be > 0");
         }
 
-        Optional<InventoryItem> maybe = inventoryRepository.findByProductIdForUpdate(productId);
+        Optional<InventoryItem> maybe = inventoryRepository.findByProductIdWithLock(productId);
 
         if (maybe.isPresent()) {
             InventoryItem item = maybe.get();
@@ -74,7 +74,7 @@ public class InventoryService {
             publishStockUpdateAfterCommit(saved);
             return saved;
         } catch (DataIntegrityViolationException ex) {
-            InventoryItem item = inventoryRepository.findByProductIdForUpdate(productId).orElseThrow(() -> new RuntimeException("Failed to find product after concurrent insert: " + productId));
+            InventoryItem item = inventoryRepository.findByProductIdWithLock(productId).orElseThrow(() -> new RuntimeException("Failed to find product after concurrent insert: " + productId));
             item.setQuantity(item.getQuantity() + quantityAdded);
             InventoryItem updated = inventoryRepository.save(item);
             publishStockUpdateAfterCommit(updated);
