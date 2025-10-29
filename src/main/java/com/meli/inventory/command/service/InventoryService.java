@@ -5,9 +5,14 @@ import com.meli.inventory.command.dto.StockUpdateEvent;
 import com.meli.inventory.command.model.InventoryItem;
 import com.meli.inventory.command.repository.InventoryRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.jms.core.JmsTemplate;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import java.util.Optional;
 
 /**
  * Handles all write operations (sales and restock) and publishes events using JMS/Artemis.
@@ -21,54 +26,78 @@ public class InventoryService {
 
     private static final String STOCK_TOPIC = "stock.update.topic";
 
+    /**
+     * Handles sale by locking the row and subtracting quantity. Publishes event after commit.
+     */
     @Transactional
     public InventoryItem handleSale(SaleRequest saleRequest) {
-        InventoryItem item = inventoryRepository.findByProductId(saleRequest.getProductId()).orElseThrow(() -> new RuntimeException("Product not found: " + saleRequest.getProductId()));
+        String productId = saleRequest.getProductId();
+
+        InventoryItem item = inventoryRepository.findByProductIdForUpdate(productId).orElseThrow(() -> new RuntimeException("Product not found: " + productId));
 
         if (item.getQuantity() < saleRequest.getQuantitySold()) {
-            throw new RuntimeException("Insufficient stock for product " + saleRequest.getProductId());
+            throw new RuntimeException("Insufficient stock for product " + productId);
         }
 
         item.setQuantity(item.getQuantity() - saleRequest.getQuantitySold());
-        InventoryItem updatedItem = inventoryRepository.save(item);
+        InventoryItem updated = inventoryRepository.save(item);
 
-        publishStockUpdate(updatedItem);
-        return updatedItem;
+        publishStockUpdateAfterCommit(updated);
+        return updated;
     }
 
+    /**
+     * Handles restock with safe create-or-update semantics. Publishes event after commit.
+     */
     @Transactional
     public InventoryItem handleRestock(String productId, int quantityAdded) {
         if (quantityAdded <= 0) {
             throw new IllegalArgumentException("quantityAdded must be > 0");
         }
 
-        InventoryItem item = inventoryRepository.findByProductId(productId).orElseGet(() -> {
-            InventoryItem newItem = new InventoryItem();
-            newItem.setProductId(productId);
-            newItem.setQuantity(0);
-            return newItem;
-        });
+        Optional<InventoryItem> maybe = inventoryRepository.findByProductIdForUpdate(productId);
 
-        int current = item.getQuantity();
-        item.setQuantity(current + quantityAdded);
-
-        InventoryItem updatedItem = inventoryRepository.save(item);
-
-        try {
-            publishStockUpdate(updatedItem);
-        } catch (org.springframework.jms.JmsSecurityException ex) {
-            throw new RuntimeException("Failed to publish stock update to broker: " + ex.getMessage(), ex);
+        if (maybe.isPresent()) {
+            InventoryItem item = maybe.get();
+            item.setQuantity(item.getQuantity() + quantityAdded);
+            InventoryItem updated = inventoryRepository.save(item);
+            publishStockUpdateAfterCommit(updated);
+            return updated;
         }
 
-        return updatedItem;
+        InventoryItem newItem = new InventoryItem();
+        newItem.setProductId(productId);
+        newItem.setQuantity(quantityAdded);
+
+        try {
+            InventoryItem saved = inventoryRepository.save(newItem);
+            publishStockUpdateAfterCommit(saved);
+            return saved;
+        } catch (DataIntegrityViolationException ex) {
+            InventoryItem item = inventoryRepository.findByProductIdForUpdate(productId).orElseThrow(() -> new RuntimeException("Failed to find product after concurrent insert: " + productId));
+            item.setQuantity(item.getQuantity() + quantityAdded);
+            InventoryItem updated = inventoryRepository.save(item);
+            publishStockUpdateAfterCommit(updated);
+            return updated;
+        }
     }
 
     /**
-     * Publishes a stock update event to the Artemis Topic using JmsTemplate.
+     * Enqueue JMS publish to happen after the surrounding DB transaction commits.
+     * This avoids the race where a listener sees the event before DB/Redis are updated.
      */
-    private void publishStockUpdate(InventoryItem item) {
+    private void publishStockUpdateAfterCommit(InventoryItem item) {
         StockUpdateEvent event = new StockUpdateEvent(item.getProductId(), item.getQuantity());
 
-        jmsTemplate.convertAndSend(STOCK_TOPIC, event);
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    jmsTemplate.convertAndSend(STOCK_TOPIC, event);
+                }
+            });
+        } else {
+            jmsTemplate.convertAndSend(STOCK_TOPIC, event);
+        }
     }
 }

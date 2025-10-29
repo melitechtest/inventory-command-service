@@ -14,8 +14,15 @@ import java.util.Optional;
 public interface InventoryRepository extends JpaRepository<InventoryItem, Long> {
 
     /**
-     * Finds an item by ID, applying a PESSIMISTIC_WRITE lock.
+     * Non-locking read by productId. Use when you only need to read current state.
+     */
+    Optional<InventoryItem> findByProductId(String productId);
+
+    /**
+     * Read by productId with a PESSIMISTIC_WRITE lock.
+     * Call this from a method annotated with @Transactional so the lock is actually applied.
+     * This prevents concurrent transactions from inserting/updating the same product simultaneously.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    Optional<InventoryItem> findByProductId(String productId);
+    Optional<InventoryItem> findByProductIdForUpdate(String productId);
 }
